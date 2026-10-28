@@ -72,11 +72,6 @@ load:
     midatl: "MID ATLANTIC REGION"
     west: "WESTERN REGION"
     south: "SOUTHERN REGION"      # = Dominion
-  # RTO COMBINED = MID ATLANTIC + WESTERN + SOUTHERN holds in the data (relative residual < 0.2%):
-  # one missing member is rebuilt from the other three before any D-7 fallback is used.
-  identity:
-    total: rto
-    parts: [midatl, west, south]
 
 solar:
   region: "PJM RTO Total"

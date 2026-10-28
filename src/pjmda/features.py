@@ -98,36 +98,13 @@ def _fill_gaps(M: pd.DataFrame, exists: pd.DataFrame, cfg: dict) -> tuple[pd.Dat
     return M1.where(exists), filled, stale
 
 
-def _fill_by_identity(mats: dict[str, pd.DataFrame], total: str, parts: list[str]
-                      ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
-    """total = sum(parts) holds in the PJM load data (relative residual < 0.2%): when exactly one
-    member of the identity is missing for an hour, rebuild it from the others (same vintage)."""
-    names = [total, *parts]
-    out = {k: v.copy() for k, v in mats.items()}
-    filled = pd.DataFrame(False, index=mats[total].index, columns=mats[total].columns)
-    for miss in names:
-        others = [n for n in names if n != miss]
-        ok = mats[others[0]].notna()
-        for o in others[1:]:
-            ok = ok & mats[o].notna()
-        cond = mats[miss].isna() & ok
-        if miss == total:
-            val = sum(mats[p] for p in parts)
-        else:
-            val = mats[total] - sum(mats[p] for p in parts if p != miss)
-        out[miss] = mats[miss].where(~cond, val)
-        filled = filled | cond
-    return out, filled
-
-
 def hourly_forecast(tbl: pd.DataFrame, value_col: str, group_col: str | None, source: str,
-                    ext_days: pd.DatetimeIndex, grid: pd.DataFrame, cfg: dict,
-                    identity: dict | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+                    ext_days: pd.DatetimeIndex, grid: pd.DataFrame, cfg: dict
+                    ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Latest vintage before cutoff(delivery day) for every target hour.
 
     Returns (values, flags): values has one column per group (or value_col),
     flags has stale_<source> and filled_<source>; both are indexed by the grid rows.
-    `identity` ({"total": g, "parts": [g, ...]}) rebuilds one missing group from the others.
     """
     t = tbl[tbl["delivery_day"].isin(ext_days)].reset_index(drop=True)
     cut = cutoff_for_day(t["delivery_day"], cfg)
@@ -142,24 +119,14 @@ def hourly_forecast(tbl: pd.DataFrame, value_col: str, group_col: str | None, so
     age_stale = _matrix(sel.groupby(["delivery_day", "hour"], as_index=False)["_stale"].max(),
                         "_stale", ext_days).fillna(0).astype(bool)
 
-    raw = {c: _matrix(sel[sel[group_col] == c] if group_col else sel, value_col, ext_days) for c in cols}
-    id_filled = None
-    if identity and group_col and all(n in raw for n in [identity["total"], *identity["parts"]]):
-        raw, id_filled = _fill_by_identity(raw, identity["total"], identity["parts"])
-        id_filled = id_filled & exists
-        if id_filled.any().any():
-            log.info("%s: %d hour(s) of a missing region rebuilt from %s = sum(%s) (same vintage, flagged filled_%s)",
-                     source, int(id_filled.to_numpy().sum()), identity["total"], identity["parts"], source)
-
     vals, any_filled, any_stale = None, None, age_stale.copy()
     for c in cols:
-        M, filled, stale = _fill_gaps(raw[c], exists, cfg)
+        part = sel[sel[group_col] == c] if group_col else sel
+        M, filled, stale = _fill_gaps(_matrix(part, value_col, ext_days), exists, cfg)
         long = _long(M, c)
         vals = long if vals is None else vals.merge(long, on=["delivery_day", "hour"])
         any_filled = filled if any_filled is None else (any_filled | filled)
         any_stale = any_stale | stale
-    if id_filled is not None:
-        any_filled = any_filled | id_filled
     flags = _long(any_stale.astype(int), f"stale_{source}").merge(
         _long(any_filled.astype(int), f"filled_{source}"), on=["delivery_day", "hour"])
     vals = grid[["delivery_day", "hour"]].merge(vals, on=["delivery_day", "hour"], how="left")
@@ -344,8 +311,7 @@ def build_features(days, tables: dict[str, pd.DataFrame], cfg: dict) -> tuple[pd
     regions = cfg["load"]["regions"]
 
     # ---- hourly load / wind / solar under their own-day cut-off ----
-    load, f_load = hourly_forecast(tables["load"], "load_mw", "region", "load", ext_days, grid_ext, cfg,
-                                   identity=cfg["load"].get("identity"))
+    load, f_load = hourly_forecast(tables["load"], "load_mw", "region", "load", ext_days, grid_ext, cfg)
     wind, f_wind = hourly_forecast(tables["wind"], "wind_mw", None, "wind", ext_days, grid_ext, cfg)
     solar, f_solar = hourly_forecast(tables["solar"], "solar_mw", None, "solar", ext_days, grid_ext, cfg)
     hf = grid_ext.merge(load.rename(columns={r: f"L_{r}" for r in regions}), on=["delivery_day", "hour"])

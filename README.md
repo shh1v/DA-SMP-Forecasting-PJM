@@ -4,7 +4,112 @@ Command-line tool that forecasts the **hourly PJM day-ahead (DA) system energy p
 (`system_energy_price_da`; LMP = SMP + congestion + losses, only the SMP part is forecast).
 The main model is LightGBM with piecewise-linear trees (`linear_tree=True`) predicting the SMP directly.
 
-__RESULTS__
+## Results at a glance (read this first)
+
+All numbers are in $/MWh and come from the files in `outputs/` (regenerate with the commands in section 2). Walk-forward
+means: for every forecast day the models are fitted on delivery days `2023-01-08 .. D-1` only, features are rebuilt for
+each day with its own cut-off, and the models are refitted every 7 days (`backtest.retrain_every_days`, the spec's
+default "for speed"; a daily-retrain run was **not** done). Hours are scored only where the actual and all five models
+have a value. Skill = `1 - MAE / MAE(naive_week)`.
+
+**2025 walk-forward (run `wf2025`, 8,757 hours)**
+
+| Slice | lgbm_linear (main) | gbm_const | lear | naive_week | naive_day |
+|---|---|---|---|---|---|
+| Overall MAE / RMSE | **6.96 / 16.27** | 7.13 / 17.66 | 7.91 / 16.89 | 18.96 / 39.14 | 11.35 / 22.02 |
+| Skill vs naive_week (MAE) | **0.633** | 0.624 | 0.583 | 0 | 0.401 |
+| On-peak (HE8-23 Mon-Fri) | **9.31 / 21.28** | 9.57 / 23.27 | 10.80 / 21.85 | 25.90 / 50.89 | 14.26 / 27.27 |
+| Off-peak | **4.92** / 10.05 | 4.99 / 10.56 | 5.39 / 10.87 | 12.91 / 24.68 | 8.82 / 16.10 |
+| Top-5% price hours | 48.12 / 65.78 | 51.10 / 72.61 | **46.04 / 65.15** | 86.27 / 111.62 | 55.44 / 74.34 |
+| Cold-snap days (top-5% `g_comp`) | 31.12 / 48.39 | 32.13 / 51.43 | **26.14 / 45.90** | 52.02 / 75.73 | 34.78 / 50.37 |
+
+* The main model beats `naive_week` by 63% in MAE (and 58% in RMSE) and beats `gbm_const` on MAE and RMSE in every slice
+  of the table (monthly MAE is mixed: `gbm_const` is slightly better in April, May and November). Linear leaves are
+  worth about 0.16 $/MWh MAE and 1.4 $/MWh RMSE here: a real but modest gain.
+* **Where it is weaker:** the LEAR benchmark is better in the most extreme conditions (top-5% hours, cold-snap days,
+  January 2025: 13.9 vs 16.3 MAE). The main model under-predicts scarcity: see the plot of 2025-01-21 below, when gas peaked
+  and the SMP was 185-310 $/MWh against a forecast of 105-145.
+* Hardest hours are the morning ramp (HE7-8) and the evening peak (HE17-21); easiest months are August (MAE 2.9),
+  May and September (4.4-4.5); hardest are January (16.3), July and June (8.4-8.6) and December (8.4).
+  `outputs/backtest/wf2025/metrics.csv` has every breakdown (overall, on/off-peak, top-5%, cold-snap, each month, each hour).
+
+**Extrapolation test (run `frozen2025`)**: models trained to 2024-12-31 and **never refitted** during 2025 (2025 prices
+were about 50% above 2024). This isolates how well the linear leaves cope with a higher price level.
+
+| Slice (MAE / RMSE) | lgbm_linear (main) | gbm_const | lear | naive_week | naive_day |
+|---|---|---|---|---|---|
+| Overall | **9.56 / 18.50** | 9.60 / 21.03 | 11.71 / 21.69 | 18.96 / 39.14 | 11.35 / 22.02 |
+| Skill vs naive_week (MAE) | **0.496** | 0.494 | 0.382 | 0 | 0.401 |
+| On-peak | **12.31 / 23.71** | 12.82 / 27.69 | 16.52 / 28.28 | 25.90 / 50.89 | 14.26 / 27.27 |
+| Off-peak | 7.16 / 12.26 | **6.79** / 12.62 | 7.52 / 13.55 | 12.91 / 24.68 | 8.82 / 16.10 |
+| Top-5% price hours | **56.12 / 71.37** | 64.27 / 85.05 | 63.33 / 80.38 | 86.27 / 111.62 | 55.44 / 74.34 |
+| Cold-snap days | 33.16 / 49.50 | 35.96 / 55.83 | **31.44 / 48.37** | 52.02 / 75.73 | 34.78 / 50.37 |
+
+* **Linear vs constant leaves.** With no refit, linear leaves are clearly better in the tail (RMSE 18.5 vs 21.0, top-5%
+  hours 56 vs 64, on-peak MAE 12.3 vs 12.8) and tied on overall MAE (9.56 vs 9.60); constant leaves are slightly better
+  off-peak (6.79 vs 7.16). That is the extrapolation benefit the spec asked about: real but moderate.
+  The main model does beat both `gbm_const` and `naive_week` on this run (the spec asks for this to be checked and
+  reported).
+* **A frozen model ages.** Versus weekly retraining, freezing at 2024-12-31 costs 2.6 $/MWh MAE (9.56 vs 6.96). By October
+  the frozen model is worse than `naive_day` (10.9 vs 8.6) and in March it is no better than `naive_week`. **The 2026
+  submission uses a model frozen at 2025-12-31 for eight months, so expect accuracy nearer these frozen numbers than the
+  weekly-retrained ones, and worse if the January 2026 gas regime is unlike anything in 2023-25.**
+
+**Final validation, H2 2025 (run `wf2025h2`, 4,416 hours, weekly retrain)**: `lgbm_linear` MAE 5.81 / RMSE 11.99, `gbm_const`
+6.01 / 13.26, `lear` 7.04 / 14.92, `naive_week` 17.33 / 36.00, `naive_day` 11.09 / 22.41.
+
+**Group ablation on H2 2025** (`outputs/backtest/wf2025h2/ablation.csv`; main model refitted without each group, same
+retrain schedule; positive = removing the group makes the error worse):
+
+| Variant | Features left | MAE | RMSE | Change in MAE | Change in RMSE |
+|---|---|---|---|---|---|
+| Full model | 19 | 5.814 | 11.990 | - | - |
+| without A (fuel: `g_comp`, `gas_basis_ew`) | 17 | 6.145 | 12.572 | +0.331 | +0.582 |
+| without B (balance: `nl`, `tight`, `ren_share`, `ramp`, `nl_max`, `s_east`, `coal_share_7`) | 12 | 6.281 | 13.043 | +0.467 | +1.052 |
+| without C (grid: `ci_lag1`, `spr_ew_lag1`, `mlf_ew_lag1`) | 16 | 5.773 | 11.838 | **-0.041** | **-0.153** |
+| without D (price history: `smp_lag1`, `smp_lag7`, `dnl`) | 16 | 6.944 | 13.621 | +1.130 | +1.631 |
+| without E (calendar) | 15 | 5.947 | 12.319 | +0.133 | +0.329 |
+| without `coal_share_7` only | 18 | 5.746 | 11.909 | **-0.069** | **-0.081** |
+
+Reading: price history (D) and the demand/supply balance (B) carry most of the information, followed by the fuel group
+(A) and the calendar (E). **The grid-constraint group (C) and `coal_share_7` do not help in this period** (removing them
+changes MAE by -0.04 and -0.07). They are reported as candidates for removal, as the spec asks, and were **not** removed.
+
+**Explainability (H2 2025, `outputs/explain/`)**: __EXPLAIN__
+
+**Plots to open** (all in `outputs/`):
+
+* `plots/wf2025/months_overview.png` - the 2025 all-months overview (actual vs forecast, one panel per month):
+
+![2025 all-months overview](outputs/plots/wf2025/months_overview.png)
+
+* `plots/wf2025/day_2025-07-15.png`, `day_2025-01-21.png` (the worst case), `month_2025-07.png` (three models), one
+  `month_YYYY-MM.png` per month. Month plots show the *average* hourly profile: `naive_week` looks close on the averaged
+  profile of July but its hourly MAE is 25.3 against 8.6 for the main model. The MAE / RMSE in every title are computed
+  on the hourly values, not on the averaged profile.
+* `backtest/wf2025/timeseries_full.png`, `worst_weeks.png`, `error_by_hour.png`, `error_by_month.png` (same for `frozen2025`, `wf2025h2`).
+* `explain/shap_importance.png`, `shap_beeswarm.png`, `shap_dependence_*.png`, `permutation_importance.png`, `ale.png`.
+
+![Worst day of 2025](outputs/plots/wf2025/day_2025-01-21.png)
+
+**Extrapolation probe (ad-hoc check, not part of the project).** The 2026 inputs contain a gas spike far outside the
+training range (`g_comp` 94 $/MMBtu on 2026-01-28 against a training maximum of 23). Holding everything else at a cold
+January 2025 weekday evening (HE19) and raising `g_comp` in the frozen model gives:
+
+| `g_comp` ($/MMBtu) | 5 | 23 | 50 | 94 |
+|---|---|---|---|---|
+| Predicted SMP ($/MWh) | 79 | 119 | 139 | 172 |
+
+Other tuned/untuned variants (15 leaves, lambda 0.1, 31 leaves) give 186-211 at 94. Nothing explodes, nothing is clipped,
+but the slope beyond the training range is only about 0.7-1.2 $/MWh per $/MMBtu, far below the 7-10 a gas-fired
+marginal unit would imply. **Expect the model to under-predict the late-January 2026 storm days**, and to recover once
+`smp_lag1` reflects the high prices. Clipped hours are counted and logged by every run (none in any backtest).
+
+**Not done / open items**
+
+* The 2026 forecast CSV: the supplied files contain no 2026 DA prices (see section 2).
+* A daily-retrain backtest (`--retrain-every 1`) was not run; weekly retraining was used throughout.
+* The tuning grid was run on the 2025 walk-forward, which overlaps these backtests, so they are mildly optimistic.
 
 ## 1. Install
 
@@ -74,6 +179,12 @@ files; `forecast` only re-cleans raw files whose modification time or size chang
 If a DA price input (D-1 or D-7 results) is missing, `forecast` and `evaluate` stop with an error that names
 the missing dates and the file they were expected in. There is no fallback model.
 
+I rehearsed this whole workflow in a scratch folder with a synthetic 2026 DA file (2025 prices shifted by one year):
+two DA files merged by `clean`, a 5,831-row submission CSV in under a second, `evaluate` on the model and on the CSV
+(identical scores), and the `plot` commands. The accuracy of that rehearsal is meaningless (fake actuals); it only
+proves the mechanics. **No 2026 forecast has been produced yet**: the supplied files contain no 2026 DA prices,
+and the spec says the submission is produced only after they arrive.
+
 ## 3. Information cut-off and vintages (the most important rule)
 
 The forecast for delivery day D may only use data available **before 10:30 EPT on D-1**
@@ -89,51 +200,57 @@ with the single function `vintage.asof_select(df, keys, cutoff)`: rows with `ava
 | Load, wind, solar forecasts | `forecast_timestamp` | One vintage per target date in the files, issued about 10:17 on D-1. |
 | Generation by fuel (actuals) | `ts_begin + 1 h + 24 h` | No publication time in the file: conservative lag (`gen_by_fuel.publish_lag_hours`). |
 
-Missing-vintage handling (all logged, flagged as helper columns, never fed to the model):
+How the selection was verified: for several days (including DST days) I compared the features with the raw files.
+The load used equals the raw vintage issued before the cut-off; `smp_lag1/7` equal the raw prices of D-1/D-7; gas uses
+the flow date D-1 with `report_date <= D-2` (the index for flow date D is excluded); and `coal_share_7` recomputed
+from the 168 generation hours available before the cut-off matches the feature to the last digit.
 
-* If the latest vintage before the cut-off is older than `vintage.stale_after_hours`, `stale_<source>=1`.
-* The load files hold exactly one vintage per region and target date, but some regions are absent on some dates
-  (`MID ATLANTIC REGION` on 17 dates). Because `RTO COMBINED = MID ATLANTIC + WESTERN + SOUTHERN` holds in the data
-  (relative residual below 0.2%), one missing member is rebuilt from the other three of the same vintage
-  (`filled_load=1`, config `load.identity`).
-* If a target hour still has no vintage at all (RTO load: 3 days, solar: 1 day, outages: 4 days in the files), the same
-  hour of D-7 (then D-14) is reused through its own cut-off, `stale_<source>=1`. Outages reuse the latest earlier posting.
-* Gaps of up to 2 hours inside one day's forecast are interpolated (`filled_<source>=1`).
-* Gas hubs are forward-filled for at most 4 days (`gas_filled=1`).
-* `g_comp` renormalises its weights over regions present; if every region is missing the forecast stops with an error.
+## 4. Missing data and data inconsistencies: what was found, what was done
 
-I checked the selection against the raw files for several days (including DST days): the load used equals the raw
-vintage issued before the cut-off, `smp_lag1/7` equal the raw prices of D-1/D-7, gas uses the flow date D-1 with
-`report_date <= D-2`, and `coal_share_7` recomputed from the 168 generation hours available before the cut-off
-matches the feature.
+Everything below is logged by `clean` / `features`, and every fallback sets a flag in `data/features/helpers.parquet`
+(`stale_*`, `filled_*`, `gas_filled`, `cref_warmup`). Flags are helper variables: they are never model inputs.
+Counts are for delivery days 2023-01-08..2025-12-31 (training / backtest) and 2026-01-01..2026-08-31 (test inputs).
 
-## 4. Data findings that shaped the cleaning
+### 4.1 Missing data
 
-* **Coverage.** DA prices run 2023-01-01 to 2025-12-31 only. Load, wind, solar, outages and gas already contain
-  2026 inputs (through 2026-08-31), so every 2026 forecast hour has its fundamentals; only the 2026 DA prices
-  are held back. `train.start` is 2022-01-01, but no file starts before 2023-01-01: the **effective training start
-  is 2023-01-08** (latest dataset start + 7 warm-up days for the D-7 price lag). History is not fabricated.
-* **DST.** The DA/load/wind/solar files use wall-clock hour-ending labels; spring-forward days have 23 labels and
-  fall-back days have **24** labels (the repeated hour is missing; on 2023-11-05 the load file also lacks label 2). Timestamps
-  are mapped with the wall clock (`ts_begin` is unique, the repeated hour resolves to its first occurrence).
-  Generation by fuel is UTC based, so its 25-hour days are exact.
-* **Solar hour labels.** The label is `hour_ending`; the first 88 forecast days (2023-01-01 to 2023-03-29) are
-  labelled 0-23, all later days 1-24. Comparing the forecast with actual solar generation shows label k aligns
-  with the hour ending at k in both groups, so the default `solar.hour_convention: hour_ending` is kept. Label 0
-  falls outside the day and is dropped; the missing night hour is filled by the short-gap rule. This only
-  affects night-time values in early 2023.
-* **Gas file.** The `description` field contains unquoted commas, so each line is split from both ends
-  (`fields[0]`=flow_date, `[1]`=code, `[-1]`=report_date, `[-2]`=price, the middle is the description).
-  `(null)` prices become NaN. The `21` and `04` series are different products (e.g. Algonquin 2023-01-02:
-  2.965 vs 23.693); only `gas.suffix` (default `21`) is used, never mixed. The rows for flow date 2024-01-01 carry a
-  `report_date` of 2024-12-31 (a year late, probably a typo): by the vintage rule they only become usable in 2025, so
-  that day is forward-filled. Weekend packages (one report date, several flow dates) are handled by the same rule.
-* **Generation by fuel.** 30 exact duplicate rows removed, 6 gaps of more than one hour, `Other` fuel appears
-  only in 1,140 hours (treated as absent). Storage is not clipped.
-* **Out-of-range gas in January 2026.** The 2026 gas files contain a winter-storm episode: composite gas
-  `g_comp` peaks at 94 $/MMBtu on 2026-01-28 (training maximum 23.0 on 2025-01-21), with Transco Z6/Z5 near
-  135 $/MMBtu. These days are far outside the training data. This is exactly what the linear leaves are meant
-  for, and also the main extrapolation risk (see Limitations).
+| What is missing | Where / when | Handling | Flag |
+|---|---|---|---|
+| History before 2023-01-01 | All files start 2023-01-01 (`train.start` is 2022-01-01) | No history is fabricated. **Effective training start = 2023-01-08** (latest file start + 7 warm-up days for `smp_lag7`). Logged by `clean`. | - |
+| **2026 DA prices** | The DA file ends 2025-12-31; all other inputs run to 2026-08-31 | Nothing is invented. `forecast` / `evaluate` stop with an error naming the missing D-1 / D-7 dates and the file expected. No fallback model, no substituted forecasts. | error |
+| RTO load forecast for a whole date | 2025-01-13, 2025-03-27, 2026-08-19 | Same hour of D-7 (then D-14) taken through its own cut-off. | `stale_load` |
+| `MID ATLANTIC REGION` load for a date | 18 dates: 2023-05-31, 2023-07-04, 2023-08-31, 2023-10-14, 2023-12-22, 2024-04-15, 2024-07-18, 2025-01-09, 2025-01-13, 2025-03-27, 2025-11-08, 2025-12-30, 2026-01-09, 2026-03-27, 2026-04-11, 2026-05-23, 2026-08-08, 2026-08-19 | Copied from D-7 per region (the other regions keep their D-1 vintage). Affects `s_east` and the `g_comp` weights only. | `stale_load` |
+| `SOUTHERN REGION` / `WESTERN REGION` load for a date | South: 2025-01-13, 2025-03-27, 2026-08-19. West: 2025-03-27 | Same D-7 copy. | `stale_load` |
+| Load vintage older than 12 h at the cut-off | 2023-12-17, 2025-11-24 | Used (latest available) but flagged. | `stale_load` |
+| Load label 2 on the fall-back day | 2023-11-05 (1 hour) | Linear interpolation inside that day's forecast (gaps of up to 2 h). | `filled_load` |
+| Solar forecast for a whole date | 2023-10-10 (and the 2023-10-09 vintage is older than 12 h) | D-7 copy / flag. | `stale_solar` |
+| Solar hour 24 (and spring-forward hour) | 83 days in Jan-Mar 2023 (labels run 0-23, see 4.2) plus the spring-forward days | Trailing night hour filled from the previous hour (solar is 0 at night) | `filled_solar` |
+| Wind forecast | Complete (2023-10-29 has one vintage older than 12 h and 3 interpolated hours) | Flagged / interpolated. | `stale_wind`, `filled_wind` |
+| Outages (PJM RTO) for a date | 2023-09-17, 2024-03-17, 2024-09-18, 2024-09-19 | Latest earlier posting reused (at most 7 days back). | `stale_outages` |
+| Gas hub price for the flow date D-1 | 15 delivery days: 2023-04-09/10, 2023-11-25/26/27, 2023-12-31, 2024-01-01/02/03, 2024-02-08..11, 2024-09-01, 2024-12-01 | Last known price per hub, forward-filled for at most 4 days; none of the 2026 days needs a fill. | `gas_filled` |
+| Null gas prices `(null)` | 82 rows over the six hubs (17 for Transco Z5 with suffix `21`) | Treated as missing, then forward-filled as above. | `gas_filled` |
+| DA hour in the 23-label spring-forward day | 2023-03-12, 2024-03-10, 2025-03-09 (2026-03-08 in the test period) | The hour does not exist. The next day's hour-3 lag and the D+7 hour-3 lag are NaN (3 hours per feature in training). LightGBM handles NaN natively; they are never encoded as 0. | NaN |
+| Generation-by-fuel hours | 6 gaps of 2-4 hours (2023-02-22, 2023-04-12, 2025-07-01, 2025-11-02, 2026-02-18, 2026-06-25) | Nothing filled: `C_ref` is a maximum and `coal_share_7` a ratio of sums, so gaps are simply skipped; `coal_share_7` needs at least 24 hours in its window. | - |
+| `g_comp` when every regional gas price or load weight is missing | Never happens in the data | Weights are renormalised over the regions present; if none is present `forecast` / `evaluate` stop with an error. | error |
+
+How many hours are flagged: training period `stale_load` 336 h (14 days), `stale_wind` 21 h, `stale_solar` 48 h,
+`stale_outages` 96 h, `filled_load` 1 h, `filled_wind` 3 h, `filled_solar` 84 h, `gas_filled` 360 h (15 days).
+2026: `stale_load` 144 h (6 days: 2026-01-09, 03-27, 04-11, 05-23, 08-08, 08-19), `filled_solar` 1 h, nothing else.
+
+### 4.2 Inconsistencies in the data
+
+| Inconsistency | Evidence | Handling |
+|---|---|---|
+| **DST encoding.** Files use wall-clock hour-ending labels 1-24. Spring-forward days have 23 labels; fall-back days have only **24** labels, so the repeated hour has no DA price. Generation by fuel is UTC based (25 exact hours). | e.g. DA 2023-11-05: labels 1-24, one row each | `ts_begin` is built from the wall clock (unique timestamps); the repeated hour resolves to its first occurrence. Forecast files have 23 rows on spring-forward days (5,831 rows for 2026-01-01..08-31) and 24 on fall-back days. |
+| **Solar hour labels.** The column is called `hour_ending` but the first 88 forecast days (2023-01-01..2023-03-29) are labelled 0-23; all later days 1-24. | Alignment against actual solar generation: label k matches the hour ending at k in both groups | Convention stays `hour_ending` (`solar.hour_convention`, a config value). Label 0 falls outside the day and is dropped; the missing trailing night hour is filled. Only night-time values of early 2023 are affected. |
+| **Gas file is not CSV.** The `description` has unquoted commas, so rows have 5-8 fields, some with trailing empty fields; prices can be `(null)`. | 250,214 rows, 0 unparseable after the fix | Each line is split from both ends (`fields[0]` flow_date, `[1]` code, `[-1]` report_date, `[-2]` price, the middle is the description). |
+| **Two parallel gas series** per hub (codes ending `21` and `04`) with very different values on some days (Algonquin 2023-01-02: 2.965 vs 23.693). | Different products | Only `gas.suffix` (default `21`) is used, never mixed in one feature. **Assumption to confirm with the organisers.** |
+| **Late gas revisions / packages.** Rows for flow date 2024-01-01/02 carry `report_date` 2024-12-31 (a year late, probably a typo); weekend packages put several flow dates under one report date. | 12 rows (suffix `21`), 18 in total | `available_at = (report_date + 1 day) 00:00`: a late row only becomes usable in 2025, so the 2024-01-0x delivery days are forward-filled (flagged). Weekend packages follow the same rule: usable for D only if `report_date <= D-2`. |
+| **Duplicated generation-by-fuel rows** (30 exact duplicates, e.g. 2023-12-31 05:00 UTC). `Other` fuel appears in only 1,140 hours. Storage can be negative. | | Duplicates dropped; `Other` is summed when present; storage is not clipped. |
+| **Several clean files for one dataset** (the interview drops a 2026 file next to the old one). | | Rows de-duplicated across files; on a conflict the most recently modified file wins and a warning is logged. |
+| **SMP identical at every node?** | Checked: the spread across nodes is zero in every hour | One value per hour taken from the hourly median of all nodes; merchant-line nodes (NEPTUNE, LINDENVFT, HUDSONTP) are excluded from every feature. |
+| **Price spikes** | DA prices up to 537 $/MWh in the lags | Kept: they are real. The Huber objective limits their leverage on the fit. |
+| **`C_ref` warm-up.** The capacity proxy needs 365 days of generation history. | 358 days (8,591 hours) of 2023 are flagged | Expanding maximum during the first year (flag `cref_warmup`), so `tight` is less comparable in 2023. Option `capacity.exclude_warmup_from_training: true` drops those rows. |
+| **Gas far outside the training range in 2026.** | `g_comp` reaches 94 $/MMBtu on 2026-01-28 (training max 23.0 on 2025-01-21); Transco Z6/Z5 near 135 | Nothing is clipped or removed. This is where the linear leaves have to extrapolate (see Limitations). |
 
 ## 5. Features (19, one model, all always used)
 
@@ -237,7 +354,9 @@ Not allowed or not available:
   LightGBM with `linear_tree=False`, isolating the effect of the linear leaves).
 * **Tuning.** Only inside the training data: 2025 walk-forward with training to 2024-12-31, 12 of the 18 combinations of
   `num_leaves {7,15,31}`, `min_data_in_leaf {100,300}`, `linear_lambda {0.1,1,10}`; learning rate and half-life fixed.
-  Chosen parameters are saved in `models/params.json`.
+  Chosen: `num_leaves=7, min_data_in_leaf=100, linear_lambda=1.0` (saved in `models/params.json`, used by every later
+  fit). The differences between combinations are small (MAE 7.5-8.0). The grid was run twice during development
+  (before and after an experiment on the load features that I reverted) and picked the same winner both times.
   Note: the 2025 backtests below overlap the tuning period, so they are slightly optimistic for the tuned parameters.
 * **Persistence.** `models/<name>_<until>.txt` (LightGBM native, includes the leaf regressions) plus a JSON with the
   feature list, categorical features, scaler mean/std per feature, training window, config hash and git commit.
@@ -266,15 +385,14 @@ it takes about a second for the whole training period).
 
 * **Spikes.** The Huber objective and MAE/RMSE scoring favour typical hours; scarcity spikes are systematically
   under-predicted (see the top-5% hours and cold-snap rows above and the peak hours in the month plots).
-  RMSE is dominated by a handful of days (January and late-June/July 2025).
+  RMSE is dominated by a handful of days (January and late June / July 2025).
 * **Leaf models can extrapolate wildly.** Linear leaves have no built-in bound; monotone constraints are only
   enforced at splits, and ridge shrinkage (`linear_lambda`) plus clipping to [-50, 1000] are the only guards.
-  In the tuned model the response is gentle rather than wild (see section 9), but it has never been validated beyond
-  `g_comp` = 23, and the 2026 file contains 94. The number of clipped hours is logged by every backtest, `forecast`
-  and `evaluate`; more than a handful would mean the leaves extrapolate badly and must be reported.
+  In the tuned model the response is gentle rather than wild (see "Extrapolation probe" above), but it has never been
+  validated beyond `g_comp` = 23, and the 2026 file contains 94. The number of clipped hours is logged by every
+  backtest, `forecast` and `evaluate`; more than a handful would mean the leaves extrapolate badly and must be reported.
 * **`C_ref` is a proxy.** `max(generation + outages)` ignores net imports and only falls when the peak hour leaves the
-  365-day window. For the first year (8,591 training hours, `cref_warmup=1`) it is an expanding maximum, which makes
-  `tight` less comparable with later years. `capacity.exclude_warmup_from_training: true` drops those rows from fits.
+  365-day window. For the first year it is an expanding maximum, which makes `tight` less comparable with later years.
 * **2026 forecasts depend on the 2026 DA file being complete.** `smp_lag1` and `smp_lag7` (and the congestion/loss
   features of D-1) come from the supplied DA results; a missing day stops `forecast`/`evaluate`. After the first
   forecast days the lags are actuals, not forecasts: errors do not compound, but nothing is available beyond the file.
@@ -282,10 +400,8 @@ it takes about a second for the whole training period).
   generation by fuel actuals, solar `hour_ending`, and that the wall-clock label mapping used for DST days matches
   the data source (fall-back days have 24 labels in the files, so the repeated hour has no DA price).
 * **Vintage coverage.** The files hold one forecast vintage per region and target date, so the "older vintage"
-  fallback is only exercised by missing dates (RTO load 3 days, solar 1 day, outages 4 days; the single region gaps
-  are rebuilt from the identity above). With several vintages per date (live use) the rule picks the latest one
-  issued before the cut-off. On 2026-08-19 the RTO, MID ATLANTIC and SOUTHERN load forecasts are all missing, so that
-  day uses the D-7 load shape (`stale_load=1`).
+  fallback is only exercised by missing dates, where the D-7 copy is used (section 4). With several vintages per
+  date (live use) the rule picks the latest one issued before the cut-off.
 * **Tuning overlap.** Hyperparameters were chosen on the 2025 walk-forward, so the 2025 numbers are mildly optimistic
   for the tuned parameters. The 2026 test period was never used for fitting, tuning or feature selection.
 * **No uncertainty bands, point forecasts only; only the SMP, not LMP.**

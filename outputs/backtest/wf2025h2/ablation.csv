@@ -1,0 +1,8 @@
+variant,removed,n_features,n_hours,mae,rmse,d_mae,d_rmse,verdict
+full (19 features),,19,4416,5.814162181853853,11.99039349274148,0.0,0.0,reference
+no_A_fuel,"g_comp,gas_basis_ew",17,4416,6.145041915791701,12.5722797591061,0.33087973393784775,0.58188626636462,removal worsens error: keep
+no_B_balance,"nl,tight,ren_share,ramp,nl_max,s_east,coal_share_7",12,4416,6.281353718188886,13.042567488800977,0.46719153633503296,1.052173996059496,removal worsens error: keep
+no_C_grid,"ci_lag1,spr_ew_lag1,mlf_ew_lag1",16,4416,5.773051869303061,11.837513854673269,-0.041110312550792116,-0.15287963806821203,"removal does NOT worsen error: candidate for removal (kept, not removed silently)"
+no_D_price,"smp_lag1,smp_lag7,dnl",16,4416,6.944159618503613,13.621396743010811,1.1299974366497594,1.6310032502693304,removal worsens error: keep
+no_E_calendar,"hour,dow,is_holiday,month",15,4416,5.947140409580517,12.319492259215234,0.1329782277266638,0.3290987664737539,removal worsens error: keep
+no_coal_share_7,coal_share_7,18,4416,5.745567066970401,11.909271574023219,-0.06859511488345227,-0.08112191871826191,"removal does NOT worsen error: candidate for removal (kept, not removed silently)"
