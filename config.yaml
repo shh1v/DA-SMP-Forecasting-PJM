@@ -1,0 +1,209 @@
+# =============================================================================
+# PJM day-ahead SMP forecaster: every tunable value lives here.
+# Relative paths are resolved against the project root (folder of this file).
+# =============================================================================
+
+paths:
+  raw_dir: data/raw
+  clean_dir: data/clean
+  features_dir: data/features
+  models_dir: models
+  outputs_dir: outputs
+
+# Dataset globs, relative to paths.raw_dir (absolute globs also work).
+# Drop an extra file (e.g. da_prices_2026.csv) next to the old one and
+# `python -m pjmda clean` picks it up: rows are concatenated and de-duplicated.
+raw_files:
+  da_prices: "da_prices*.csv"
+  gas_prices: "gas_prices*.csv"
+  gen_outages: "gen_outages*.csv"
+  load_forecast: "load_forecast*.csv"
+  solar_forecast: "solar_forecast*.csv"
+  wind_forecast: "wind_forecast*.csv"
+  gen_by_fuel: "gen_by_fuel*.csv"
+
+timezone: America/New_York        # Eastern Prevailing Time (DST aware)
+
+# Training scope. No fit ever uses delivery days after train.end.
+train:
+  start: "2022-01-01"             # effective start = latest dataset start + warmup (see clean log)
+  end: "2025-12-31"
+  warmup_days: 7                  # price lags need D-7
+
+# Information cut-off for delivery day D: (D - days_before) at `time` EPT.
+cutoff:
+  time: "10:30"
+  days_before: 1
+
+# ------------------------------------------------------------------ datasets
+da:
+  publish_time: "13:30"           # DA results of day X are posted at this time ...
+  publish_days_before: 1          # ... on day X - 1
+  hub_west: "WESTERN HUB"
+  hub_east: "EASTERN HUB"
+  zone_suffix: "_RESID_AGG"
+  excluded_nodes: [NEPTUNE, LINDENVFT, HUDSONTP]   # merchant lines into New York
+  min_hours_per_day: 23           # a delivery day with fewer SMP hours counts as missing
+  smp_floor_abs: 1.0              # smp1_abs = max(|SMP(D-1,h)|, floor)
+
+gas:
+  suffix: "21"                    # "21" or "04": two different products, never mixed
+  max_ffill_days: 4               # forward-fill limit per hub (days)
+  publish_lag_days: 1             # available_at = (report_date + 1 day) 00:00 EPT
+  hubs:                           # name: code stem (suffix is appended)
+    TETCO_M3: IGBEK
+    TRANSCO_Z6_NNY: IGBEL
+    TRANSCO_Z5_S: IGCHL
+    EGAS_SOUTH: IGBDC
+    COLUMBIA_APP: IGBDE
+    CHICAGO_CG: IGBDX
+  regions:                        # regional mean uses whichever hubs are present
+    midatl: [TETCO_M3, TRANSCO_Z6_NNY]
+    south: [TRANSCO_Z5_S]
+    west: [EGAS_SOUTH, COLUMBIA_APP, CHICAGO_CG]
+
+outages:
+  region: "PJM RTO"
+  max_ffill_days: 7               # if a day has no posting, reuse the latest earlier one
+
+load:
+  regions:
+    rto: "RTO COMBINED"
+    midatl: "MID ATLANTIC REGION"
+    west: "WESTERN REGION"
+    south: "SOUTHERN REGION"      # = Dominion
+  # RTO COMBINED = MID ATLANTIC + WESTERN + SOUTHERN holds in the data (relative residual < 0.2%):
+  # one missing member is rebuilt from the other three before any D-7 fallback is used.
+  identity:
+    total: rto
+    parts: [midatl, west, south]
+
+solar:
+  region: "PJM RTO Total"
+  # "hour_ending":    label k covers [k-1, k) EPT
+  # "hour_beginning": label k covers [k, k+1) EPT
+  hour_convention: hour_ending
+
+gen_by_fuel:
+  publish_lag_hours: 24           # available_at = ts_begin + 1h + lag (no publication time in file)
+  core_fuels: [Coal, Gas, Hydro, "Multiple Fuels", Nuclear, Oil, "Other Renewables", Solar, Storage, Wind]
+  coal_window_hours: 168          # coal_share_7
+  coal_min_hours: 24              # fewer hours available -> NaN
+
+capacity:
+  window_days: 365                # C_ref: trailing max of (generation + outages)
+  exclude_warmup_from_training: false   # true: drop rows with cref_warmup=1 from fits
+
+# Vintage handling
+vintage:
+  stale_after_hours:              # selected vintage older than this at the cut-off -> stale_<source>=1
+    load: 12
+    wind: 12
+    solar: 12
+    outages: 18
+  fallback_lag_days: 7            # no vintage for a target hour: reuse same hour D-7, D-14 ... (flagged stale)
+  fallback_max_lags: 2
+  max_fill_gap_hours: 2           # short gaps inside one day's forecast are interpolated
+
+# ------------------------------------------------------------------ features
+features:
+  groups:                         # exactly these 19 columns reach the model
+    A_fuel: [g_comp, gas_basis_ew]
+    B_balance: [nl, tight, ren_share, ramp, nl_max, s_east, coal_share_7]
+    C_grid: [ci_lag1, spr_ew_lag1, mlf_ew_lag1]
+    D_price: [smp_lag1, smp_lag7, dnl]
+    E_calendar: [hour, dow, is_holiday, month]
+  categorical: [hour, dow, is_holiday, month]
+  monotone:                       # +1 / -1; everything else 0 (split-level only with linear trees)
+    tight: 1
+    nl: 1
+    nl_max: 1
+    g_comp: 1
+    ren_share: -1
+
+# --------------------------------------------------------------------- model
+model:
+  clip_min: -50.0
+  clip_max: 1000.0
+  half_life_days: 180
+  valid_days: 60                  # last N days of each training window = early-stopping set
+  early_stopping_rounds: 100
+  min_train_days: 120             # refuse to fit on fewer days
+  refit_full: true                # refit on the full window with the best iteration found
+  seed: 42
+  use_tuned_params: true          # read models/params.json when present
+  lgbm:
+    objective: huber              # NOT l1: unsupported with linear trees
+    alpha: 10.0                   # Huber threshold in $/MWh
+    metric: l1
+    learning_rate: 0.03
+    num_leaves: 15
+    min_data_in_leaf: 200
+    feature_fraction: 0.8
+    bagging_fraction: 0.8
+    bagging_freq: 1
+    lambda_l2: 1.0
+    linear_lambda: 1.0
+    n_estimators: 2000
+    device_type: cpu
+    num_threads: 0
+    verbosity: -1
+
+lear:
+  # prices are transformed with asinh((p - median) / (1.4826 * MAD)), fitted on the training window
+  n_splits: 4                     # TimeSeriesSplit folds in LassoCV
+  n_alphas: 30
+  max_iter: 5000
+  price_lags: [1, 2, 3, 7]        # same-hour lags (days)
+  features: [g_comp, nl, tight, ren_share, ramp, nl_max, s_east, coal_share_7]
+
+tune:
+  start: "2025-01-01"
+  end: "2025-12-31"
+  train_until: "2024-12-31"
+  retrain_every_days: 30
+  grid:                           # 12 of the 18 combinations
+    - {num_leaves: 7,  min_data_in_leaf: 100, linear_lambda: 1.0}
+    - {num_leaves: 7,  min_data_in_leaf: 300, linear_lambda: 1.0}
+    - {num_leaves: 15, min_data_in_leaf: 100, linear_lambda: 1.0}
+    - {num_leaves: 15, min_data_in_leaf: 300, linear_lambda: 1.0}
+    - {num_leaves: 31, min_data_in_leaf: 100, linear_lambda: 1.0}
+    - {num_leaves: 31, min_data_in_leaf: 300, linear_lambda: 1.0}
+    - {num_leaves: 15, min_data_in_leaf: 100, linear_lambda: 0.1}
+    - {num_leaves: 15, min_data_in_leaf: 300, linear_lambda: 0.1}
+    - {num_leaves: 31, min_data_in_leaf: 300, linear_lambda: 0.1}
+    - {num_leaves: 15, min_data_in_leaf: 100, linear_lambda: 10.0}
+    - {num_leaves: 15, min_data_in_leaf: 300, linear_lambda: 10.0}
+    - {num_leaves: 7,  min_data_in_leaf: 100, linear_lambda: 10.0}
+
+# ------------------------------------------------------------------ backtest
+backtest:
+  retrain_every_days: 7           # 1 for the final run
+  models: [lgbm_linear, gbm_const, lear, naive_week, naive_day]
+  main_model: lgbm_linear
+  baseline: naive_week
+  runs:                           # named standard runs used by run-all / README
+    wf2025:  {start: "2025-01-01", end: "2025-12-31"}
+    wf2025h2: {start: "2025-07-01", end: "2025-12-31"}
+  top_price_quantile: 0.95        # "top-5% price hours"
+  cold_snap_quantile: 0.95        # "cold snap" days: g_comp in the top 5%
+  worst_weeks: 3
+  on_peak_hours: [8, 23]          # HE8-HE23, Mon-Fri, not a NERC holiday
+
+# ------------------------------------------------------------------- explain
+explain:
+  shap_rows: 1000
+  shap_background: 100
+  perm_repeats: 10
+  ale_features: [tight, nl, ren_share, g_comp, s_east]
+  ale_bins: 20
+  shap_max_evals: 300             # model evaluations per explained row (PermutationExplainer)
+  dependence_features: [tight, nl, ren_share, g_comp, gas_basis_ew, smp_lag1, spr_ew_lag1]
+  dependence_color: {tight: hour, g_comp: month, gas_basis_ew: month}   # default colour: hour
+  top_drivers: 8
+  seed: 7
+
+plots:
+  dpi: 130
+  figsize_day: [10, 5]
+  figsize_overview: [18, 12]

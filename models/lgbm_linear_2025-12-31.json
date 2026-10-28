@@ -1,0 +1,157 @@
+{
+  "kind": "lgbm",
+  "linear": true,
+  "features": [
+    "g_comp",
+    "gas_basis_ew",
+    "nl",
+    "tight",
+    "ren_share",
+    "ramp",
+    "nl_max",
+    "s_east",
+    "coal_share_7",
+    "ci_lag1",
+    "spr_ew_lag1",
+    "mlf_ew_lag1",
+    "smp_lag1",
+    "smp_lag7",
+    "dnl",
+    "hour",
+    "dow",
+    "is_holiday",
+    "month"
+  ],
+  "categorical": [
+    "hour",
+    "dow",
+    "is_holiday",
+    "month"
+  ],
+  "scaler": {
+    "g_comp": {
+      "mean": 2.5184626248181816,
+      "std": 1.9045377934865928
+    },
+    "gas_basis_ew": {
+      "mean": 0.2545254722636768,
+      "std": 2.2077341933794767
+    },
+    "nl": {
+      "mean": 86465.0572160104,
+      "std": 16016.26475235136
+    },
+    "tight": {
+      "mean": 0.6591021224794387,
+      "std": 0.1008633609117378
+    },
+    "ren_share": {
+      "mean": 0.059541809794594294,
+      "std": 0.03614114544881244
+    },
+    "ramp": {
+      "mean": 0.33704511537136955,
+      "std": 3213.547679635151
+    },
+    "nl_max": {
+      "mean": 100012.64023227338,
+      "std": 16527.333100035277
+    },
+    "s_east": {
+      "mean": 0.48519070187670676,
+      "std": 0.01878191722630381
+    },
+    "coal_share_7": {
+      "mean": 0.25753791216781613,
+      "std": 0.044000327427102935
+    },
+    "ci_lag1": {
+      "mean": 0.11304226694157449,
+      "std": 0.07890839477115912
+    },
+    "spr_ew_lag1": {
+      "mean": -0.1510091033173759,
+      "std": 0.2789436755240635
+    },
+    "mlf_ew_lag1": {
+      "mean": 0.007697954215851181,
+      "std": 0.026239045700433665
+    },
+    "smp_lag1": {
+      "mean": 36.2418825105243,
+      "std": 24.56539768038641
+    },
+    "smp_lag7": {
+      "mean": 36.221750095675475,
+      "std": 24.561038952118977
+    },
+    "dnl": {
+      "mean": 12.339445235361651,
+      "std": 6730.3716858632415
+    }
+  },
+  "best_iteration": 384,
+  "window": [
+    "2023-01-08",
+    "2025-12-31"
+  ],
+  "n_rows": 26133,
+  "params": {
+    "objective": "huber",
+    "alpha": 10.0,
+    "metric": "l1",
+    "learning_rate": 0.03,
+    "num_leaves": 7,
+    "min_data_in_leaf": 100,
+    "feature_fraction": 0.8,
+    "bagging_fraction": 0.8,
+    "bagging_freq": 1,
+    "lambda_l2": 1.0,
+    "linear_lambda": 1.0,
+    "device_type": "cpu",
+    "num_threads": 0,
+    "verbosity": -1,
+    "linear_tree": true,
+    "tree_learner": "serial",
+    "seed": 42,
+    "deterministic": true,
+    "force_row_wise": true
+  },
+  "ref_day": "2026-01-01",
+  "feature_list": [
+    "g_comp",
+    "gas_basis_ew",
+    "nl",
+    "tight",
+    "ren_share",
+    "ramp",
+    "nl_max",
+    "s_east",
+    "coal_share_7",
+    "ci_lag1",
+    "spr_ew_lag1",
+    "mlf_ew_lag1",
+    "smp_lag1",
+    "smp_lag7",
+    "dnl",
+    "hour",
+    "dow",
+    "is_holiday",
+    "month"
+  ],
+  "categorical_features": [
+    "hour",
+    "dow",
+    "is_holiday",
+    "month"
+  ],
+  "training_window": [
+    "2023-01-08",
+    "2025-12-31"
+  ],
+  "config_hash": "e61e6092563f",
+  "git_commit": "ceb3cc1",
+  "created": "2026-10-28T02:54:35",
+  "lightgbm": "4.7.0",
+  "pandas": "3.1.0"
+}
