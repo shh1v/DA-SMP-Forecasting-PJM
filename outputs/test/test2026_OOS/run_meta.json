@@ -1,0 +1,15 @@
+{
+  "kind": "test",
+  "main_model": "lgbm_linear",
+  "models": [
+    "lgbm_linear",
+    "gbm_const",
+    "lear",
+    "naive_week",
+    "naive_day"
+  ],
+  "start": "2026-09-08 00:00:00",
+  "end": "2026-10-29 00:00:00",
+  "model": "",
+  "forecast_file": ""
+}
